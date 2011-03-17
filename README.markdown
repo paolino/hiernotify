@@ -1,5 +1,3 @@
-Hiernotify readme
-=================
 
 Install
 --------
