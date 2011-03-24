@@ -1,4 +1,4 @@
-module Control.Concurrent.STM.TMonoid (TMonoid, writeTMonoid, readTMonoid, newDelayedTMonoid) where
+module Control.Concurrent.STM.TMonoid (TMonoid, writeTMonoid, readTMonoid, newTMonoid) where
 
 import Control.Concurrent.STM
 import Data.Monoid 
@@ -11,19 +11,15 @@ data TMonoid m = TMonoid {
   }
 
 -- | create a TMonoid for a comparable Monoid. The created TMonoid waits for an empty update to release a read
-newDelayedTMonoid :: (Monoid m, Eq m) 
-  => Int      -- ^ number of empty mappends before allowing the read 
-  -> STM (TMonoid m)  -- ^ a delayed TMonoid
-newDelayedTMonoid n = do
+newTMonoid :: (Monoid m, Eq m) 
+  => STM (TMonoid m)  -- ^ a delayed TMonoid
+newTMonoid = do
   x <- newTVar mempty -- the monoid
-  was <- newTVar 0 -- delay counter
   let   
-    write y   | y == mempty = readTVar was >>= writeTVar was . (+ 1) -- update counter
-              | otherwise = readTVar x >>= writeTVar x . (`mappend` y) >> writeTVar was 0 --update monoid and reset counter
+    write y   = readTVar x >>= writeTVar x . (`mappend` y)  --update monoid and reset counter
     read' = do
       y <- readTVar x
-      z <- readTVar was
-      when (y == mempty || z < n) retry -- on empty monoid and lately busy 
+      when (y == mempty) retry -- on empty monoid and lately busy 
       writeTVar x mempty -- reset the monoid
       return y
   return $ TMonoid write read'

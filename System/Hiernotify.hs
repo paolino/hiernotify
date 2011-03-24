@@ -1,4 +1,4 @@
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TupleSections, DoRec #-}
 
 -- | This module offers a daemon polling a filesystem hierarchy to notify changes to a given IO action.
 --
@@ -19,42 +19,22 @@
 -- @
 --
 
-module System.Hiernotify (Difference (..), onDifferenceDaemon) where
+module System.Hiernotify (Difference (..), Configuration (..), Controller (..) , ControllerConfiguration (..), Ermes (..), mkErmes) where
 
 import Control.Applicative ((<$>))
 import Data.Monoid (Monoid (..), mempty, mappend)
-import Control.Monad.List (ListT (ListT), runListT,guard, forever)
-import Control.Concurrent (forkIO, threadDelay, killThread)
-import Control.Concurrent.STM (  newTVar, readTVar, writeTVar, atomically)
-import Control.Monad.Trans (lift)
+import Control.Monad (guard, forever,when , void)
+import Control.Concurrent (forkIO, killThread)
+import Control.Concurrent.STM -- (  newTVar, readTVar, writeTVar, atomically)
+import Control.Arrow (first)
 import Data.List ((\\), nub, intersect)
-import Data.Maybe (catMaybes)
-import System.Directory (getModificationTime, doesDirectoryExist, getDirectoryContents)
-import System.FilePath (normalise, (</>))
-import System.Time (ClockTime)
-import Control.Concurrent.STM.TMonoid (TMonoid, newDelayedTMonoid, readTMonoid, writeTMonoid)
-
+import qualified System.Timer.Updatable as T
 -- | Difference datatype containing a difference as three sets of paths
 data Difference = Difference {
   created :: [FilePath], -- ^ Files appeared
   deleted :: [FilePath], -- ^ Files disappeared
   modified :: [FilePath] -- ^ Files modified
   } deriving (Show, Eq)
-
-
--- Get all paths under a directory
-getRecursiveContents 
-  :: (FilePath -> Bool) -- ^ guard  
-  -> FilePath       -- ^ top
-  -> IO [(FilePath, ClockTime)]  -- ^ List of files found
-getRecursiveContents g = runListT . getRecursiveContents' where   
-  getRecursiveContents' path = do
-    pathIsDir <- lift $ doesDirectoryExist path
-    if pathIsDir then do 
-      name <- ListT $ getDirectoryContents path
-      guard . g $ name
-      getRecursiveContents' . normalise $ path </> name
-      else (path,) <$> lift (getModificationTime path)
 
 
 -- half correct instance. It forces files which have been deleted and created to be marked as modifications. It's not correct as a delete after a create is not a modification. But correcting this bug involves mostly comparing timestamps correctly, because it can happen inside one element of the mappend.
@@ -66,50 +46,57 @@ instance Monoid Difference where
     in Difference ((nn \\ dd) \\ mm) ((dd \\ nn) \\ mm) (nub $ mm ++ intersect nn dd)
   mempty = Difference [] [] []
 
--- create a stateful sampling action for a hierarchy. State is needed because we compute diffs 
-checkDifference :: (FilePath -> Bool) 
-    -> FilePath       -- ^ top directory
-    -> IO (IO Difference) -- ^ null initialized stateful action
-checkDifference g top = do  
-  t <- atomically $ newTVar [] 
-  return $ do 
-    xs <- getRecursiveContents g top 
-    ws <- atomically $ do 
-      ws <- readTVar t
-      writeTVar t xs
-      return ws
-    let   
-      news' = map fst xs \\ map fst ws 
-      deleteds' = map fst ws \\ map fst xs
-      modified' = catMaybes $ do 
-        (x,y) <- xs
-        return $  lookup x ws >>= \y' -> if y /= y' then Just x else Nothing
-    return $ Difference news' deleteds' modified'
+  
+update :: [FilePath] -> Difference -> [FilePath]
+update ps (Difference ns ds ms) = nub $ (ps ++ ns ++ ms) \\ ds
+
+-- | configuration to make an Ermes
+data Configuration = Configuration 
+  { top :: FilePath
+  , silence :: Int
+  , select :: FilePath -> Bool
+  }
+
+data ControllerConfiguration = ControllerConfiguration
+  { _top :: FilePath
+  , _select :: FilePath -> Bool
+  , _diffs :: Difference -> IO ()
+  }
 
 
--- track file changes in a hierarchy. This program updates the passed TMonoid. The result action kills the poller daemon 
-trackPollFiles  :: Int      -- ^ polling delay in seconds
-    -> (FilePath -> Bool)  -- ^ path filter
-    -> FilePath     -- ^ hierarchy top
-    -> TMonoid Difference   -- ^ a monoidal STM memory cell storing last modifications
-    -> IO (IO ())   -- ^ the action to kill the tracking program
-trackPollFiles n g top tm = do
-  s <- checkDifference g top 
-  k <- forkIO . forever $ threadDelay (1000000 * n) >> s >>= atomically . writeTMonoid tm 
-  return $ killThread k
 
--- | Execute an action on file changes in a hierarchy. 
-onDifferenceDaemon  :: Int    -- ^ polling delay in seconds
-      -> Int    -- ^ number of no-change delays before running the action 
-      -> (FilePath -> Bool) -- ^ path filter
-      -> FilePath -- ^ file hierarchy top
-      -> (Difference -> IO ()) -- ^ the action executed on a modification
-      -> IO (IO ()) -- ^ the action to kill the daemon
-onDifferenceDaemon n n2 g top f = do 
-  tm <- atomically $ newDelayedTMonoid n2 
-  kt' <- trackPollFiles n g top tm
-  k <- forkIO . forever $ atomically (readTMonoid tm) >>= f 
-  return $ killThread k >> kt'
+-- | An abstract Controller. Parametrized on its configuration, it runs in its thread 
+newtype Controller = Controller (ControllerConfiguration -> IO (IO (), [FilePath]))
+
+-- | an Ermes is an object controlling a hierarchy. Its difference method will block until a Difference is available and at least a time of peace has elapsed.Reading an Ermes calling difference will result in deleting the difference and updating the list of paths. The list of path along the difference is always the list of path which the difference refers to.
+data Ermes = Ermes 
+  { difference :: IO (Difference,[FilePath])
+  , kill :: IO () 
+  }
+
+-- | make an Ermes given a Controller and the Ermes configuration
+mkErmes :: Controller -> Configuration -> IO Ermes
+mkErmes (Controller controller) co = do
+  timer <- newTVarIO Nothing -- timer
+  let comunicate ermes = atomically $ do 
+        readTVar timer >>= maybe (return ()) (void . T.wait) 
+        (d,p) <- readTVar ermes
+        when (d == mempty) retry
+        writeTVar ermes (mempty,update p d)
+        return (d,p)
+  let contribute ermes d = do
+        mt <- atomically $ do 
+          readTVar ermes >>= writeTVar ermes . first (`mappend` d)
+          readTVar timer 
+        case mt of
+          Nothing -> T.parallel (atomically $ writeTVar timer Nothing) (silence co) >>= atomically . writeTVar timer . Just 
+          Just t -> T.renew t $ silence co
+  rec   (t,ps) <- controller $ ControllerConfiguration (top co) (select co) (contribute ermes)
+        ermes <- newTVarIO (mempty,ps)
+  let kill' = t >> atomically (readTVar timer) >>= maybe (return ()) T.kill
+  return $ Ermes (comunicate ermes) kill' 
+
+    
 
 
 
