@@ -1,35 +1,12 @@
-{-# LANGUAGE TupleSections, DoRec #-}
+{-# LANGUAGE TupleSections#-}
 
--- | This module offers a daemon polling a filesystem hierarchy to notify changes to a given IO action.
---
--- This example runs a /n/ seconds console reporter for the activity in hierarchy /p/. Polling delay is 3 seconds. 
--- And it waits 2 silent polling samples before reporting to console.
---
--- Medium responsiveness for an isolated change is then 3 * (2 + 1/2) seconds
--- 
--- @
--- testReport   :: Int -- ^ life span for the program
---    -> FilePath -- ^ hierarchy top
---    -> IO () -- ^ block for life span
--- testReport n p = do 
---  k <- onDifferenceDaemon  3 2 (not . isPrefixOf \".\") p  (print . report) -- boot the onDifferenceDaemon
---  threadDelay $ n * 1000000 -- wait n seconds
---  k -- kill the onDifferenceDaemon
---  where report (Difference nn dd mm) = map length [nn,dd,mm]
--- @
---
+-- | Abstract notifier definitions.
+module System.Hiernotify (Difference (..), Configuration (..), Notifier (..) ) where
 
-module System.Hiernotify (Difference (..), Configuration (..), Controller (..) , ControllerConfiguration (..), Ermes (..), mkErmes) where
-
-import Control.Applicative ((<$>))
 import Data.Monoid (Monoid (..), mempty, mappend)
-import Control.Monad (guard, forever,when , void)
-import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.STM -- (  newTVar, readTVar, writeTVar, atomically)
-import Control.Arrow (first)
 import Data.List ((\\), nub, intersect)
-import qualified System.Timer.Updatable as T
--- | Difference datatype containing a difference as three sets of paths
+
+-- | Difference datatype containing a difference as three sets of paths. This datatype is the core content of a notification of changes in a hierarchy.
 data Difference = Difference {
   created :: [FilePath], -- ^ Files appeared
   deleted :: [FilePath], -- ^ Files disappeared
@@ -47,54 +24,24 @@ instance Monoid Difference where
   mempty = Difference [] [] []
 
   
-update :: [FilePath] -> Difference -> [FilePath]
-update ps (Difference ns ds ms) = nub $ (ps ++ ns ++ ms) \\ ds
-
--- | configuration to make an Ermes
+-- | Configuration for notifiers. Minimal configuration to build a notifier.
 data Configuration = Configuration 
-  { top :: FilePath
-  , silence :: Int
-  , select :: FilePath -> Bool
+  { top :: FilePath             -- ^ directory at the top of the hierarchy under control
+  , silence :: Int              -- ^ minimum time lapse in seconds where nothing changes before a difference is released
+  , select :: FilePath -> Bool  -- ^ filter for file paths, positive must be included 
   }
 
-data ControllerConfiguration = ControllerConfiguration
-  { _top :: FilePath
-  , _select :: FilePath -> Bool
-  , _diffs :: Difference -> IO ()
+-- | Abstract notifiers. A Notifier is an object controlling a hierarchy. 
+--
+-- Its difference method will block until a Difference is available and at least a time of peace has elapsed.
+--
+-- Reading a difference must result internally in deleting the difference and updating the list of paths. 
+-- The list of paths read together with the difference is always the list of paths to which the difference will be applied.
+data Notifier = Notifier 
+  { difference :: IO (Difference,[FilePath]) -- ^ block until next difference 
+  , stop :: IO ()  -- ^ stop the notification daemon 
   }
 
-
-
--- | An abstract Controller. Parametrized on its configuration, it runs in its thread 
-newtype Controller = Controller (ControllerConfiguration -> IO (IO (), [FilePath]))
-
--- | an Ermes is an object controlling a hierarchy. Its difference method will block until a Difference is available and at least a time of peace has elapsed.Reading an Ermes calling difference will result in deleting the difference and updating the list of paths. The list of path along the difference is always the list of path which the difference refers to.
-data Ermes = Ermes 
-  { difference :: IO (Difference,[FilePath])
-  , kill :: IO () 
-  }
-
--- | make an Ermes given a Controller and the Ermes configuration
-mkErmes :: Controller -> Configuration -> IO Ermes
-mkErmes (Controller controller) co = do
-  timer <- newTVarIO Nothing -- timer
-  let comunicate ermes = atomically $ do 
-        readTVar timer >>= maybe (return ()) (void . T.wait) 
-        (d,p) <- readTVar ermes
-        when (d == mempty) retry
-        writeTVar ermes (mempty,update p d)
-        return (d,p)
-  let contribute ermes d = do
-        mt <- atomically $ do 
-          readTVar ermes >>= writeTVar ermes . first (`mappend` d)
-          readTVar timer 
-        case mt of
-          Nothing -> T.parallel (atomically $ writeTVar timer Nothing) (silence co) >>= atomically . writeTVar timer . Just 
-          Just t -> T.renew t $ silence co
-  rec   (t,ps) <- controller $ ControllerConfiguration (top co) (select co) (contribute ermes)
-        ermes <- newTVarIO (mempty,ps)
-  let kill' = t >> atomically (readTVar timer) >>= maybe (return ()) T.kill
-  return $ Ermes (comunicate ermes) kill' 
 
     
 
