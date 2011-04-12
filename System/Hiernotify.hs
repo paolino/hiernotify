@@ -1,33 +1,41 @@
 {-# LANGUAGE TupleSections#-}
 
 -- | Abstract notifier definitions.
-module System.Hiernotify (Difference (..), Configuration (..), Notifier (..) ) where
+module System.Hiernotify (Difference, DifferenceP (..), Configuration (..), Notifier (..) ) where
 
 import Data.Monoid (Monoid (..), mempty, mappend)
 import Data.List ((\\), nub, intersect)
+import Data.Int
 
 -- | Difference datatype containing a difference as three sets of paths. This datatype is the core content of a notification of changes in a hierarchy.
-data Difference = Difference {
-  created :: [FilePath], -- ^ Files appeared
-  deleted :: [FilePath], -- ^ Files disappeared
-  modified :: [FilePath] -- ^ Files modified
+data DifferenceP a = DifferenceP {
+  created :: [a], -- ^ Files appeared
+  deleted :: [a], -- ^ Files disappeared
+  modified :: [a] -- ^ Files modified
   } deriving (Show, Eq)
 
 
+instance Functor DifferenceP where
+  fmap f (DifferenceP xs ys zs) = DifferenceP (map f xs) (map f ys) (map f zs)
+
+type Difference = DifferenceP FilePath
+
+
+
 -- half correct instance. It forces files which have been deleted and created to be marked as modifications. It's not correct as a delete after a create is not a modification. But correcting this bug involves mostly comparing timestamps correctly, because it can happen inside one element of the mappend.
-instance Monoid Difference where
-  Difference n d m `mappend` Difference n' d' m' = let
+instance Eq a => Monoid (DifferenceP a) where
+  DifferenceP n d m `mappend` DifferenceP n' d' m' = let
     mm = nub $ m ++ m'
     nn = nub $ n ++ n'
     dd = nub $ d ++ d' 
-    in Difference ((nn \\ dd) \\ mm) ((dd \\ nn) \\ mm) (nub $ mm ++ intersect nn dd)
-  mempty = Difference [] [] []
+    in DifferenceP ((nn \\ dd) \\ mm) ((dd \\ nn) \\ mm) (nub $ mm ++ intersect nn dd)
+  mempty = DifferenceP [] [] []
 
   
 -- | Configuration for notifiers. Minimal configuration to build a notifier.
 data Configuration = Configuration 
   { top :: FilePath             -- ^ directory at the top of the hierarchy under control
-  , silence :: Int              -- ^ minimum time lapse in seconds where nothing changes before a difference is released
+  , silence :: Int64              -- ^ minimum time lapse in seconds where nothing changes before a difference is released
   , select :: FilePath -> Bool  -- ^ filter for file paths, positive must be included 
   }
 

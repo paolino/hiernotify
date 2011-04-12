@@ -1,7 +1,7 @@
 
 {-# LANGUAGE TupleSections #-}
 
--- | This module offers a daemon polling a filesystem hierarchy to notify changes.
+-- | This module offers a daemon polling a filesystem hierarchy to notify changes. 
 --
 -- This example runs a /n/ seconds console reporter for the activity in hierarchy /p/. Polling delay is 3 seconds. 
 -- And it waits a 10 seconds lapse without modifications before reporting. Activities in hierarchy p are reported, while running"
@@ -29,7 +29,8 @@
 module System.Hiernotify.Polling 
   ( mkPollNotifier
   , Configuration (..)
-  , Difference (..) 
+  , DifferenceP (..) 
+  , Difference
   , Notifier (..)
   ) where
 
@@ -40,7 +41,7 @@ import Control.Concurrent.STM (newTVar, readTVar, writeTVar, atomically)
 import Data.Maybe (catMaybes)
 import Control.Concurrent.STM.TMonoid (TMonoid, newTMonoid, readTMonoid, writeTMonoid)
 import System.Hiernotify.Controller (Controller (..), mkNotifier, NextDiff (..), getRecursiveContents)
-import System.Hiernotify (Configuration (..), Notifier (..), Difference (..))
+import System.Hiernotify (Configuration (..), Notifier (..), DifferenceP (..), Difference)
 import Data.List ((\\))
 import Control.Concurrent.Killable (kill)
 
@@ -63,7 +64,7 @@ checkDifference g top' = do
       modified' = catMaybes $ do 
         (x,y) <- xs
         return $  lookup x ws >>= \y' -> if y /= y' then Just x else Nothing
-    return $ Difference news' deleteds' modified'
+    return $ DifferenceP news' deleteds' modified'
 
 
 -- track file changes in a hierarchy. This program updates the passed TMonoid. The result action kills the poller daemon 
