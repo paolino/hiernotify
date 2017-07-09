@@ -23,7 +23,7 @@ library
                       filepath ,
                       directory,
                       stm,
-                      old-time,
+                      time,
                       mtl,
                       timers-updatable
   exposed-modules:    System.Hiernotify.Polling

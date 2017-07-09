@@ -2,7 +2,7 @@
 module System.Hiernotify.Controller  where
 
 
-import System.Time (ClockTime)
+import Data.Time.Clock (UTCTime)
 import Control.Applicative ((<$>))
 import Data.List ((\\),nub)
 import Data.Monoid (Monoid (..), mempty, mappend)
@@ -32,7 +32,7 @@ newtype NextDiff = NextDiff (IO (Difference,NextDiff))
 getRecursiveContents 
   :: (FilePath -> Bool) -- ^ guard  
   -> FilePath       -- ^ top
-  -> IO [(FilePath, ClockTime)]  -- ^ List of files found
+  -> IO [(FilePath, UTCTime)]  -- ^ List of files found
 getRecursiveContents g = runListT . getRecursiveContents' where   
   getRecursiveContents' path = do
     pathIsDir <- lift $ doesDirectoryExist path
